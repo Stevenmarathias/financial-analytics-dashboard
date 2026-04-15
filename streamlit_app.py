@@ -374,7 +374,106 @@ def get_industry_stats(sic_code=None):
 
 
 # ──────────────────────────────────────────────
-# App UI
+# Sidebar
+# ──────────────────────────────────────────────
+with st.sidebar:
+    st.header("📊 Navigation")
+    page = st.radio("", ["Predict a Stock", "About This App", "Model Details"], label_visibility="collapsed")
+
+if page == "About This App":
+    st.title("About This App")
+    st.subheader("What?")
+    st.markdown(
+        "This app predicts whether a company's **Return on Assets (ROA)** will "
+        "**improve or decline** in the next fiscal year. It uses machine learning "
+        "models trained on 15 years of financial data from WRDS Compustat."
+    )
+    st.subheader("Why?")
+    st.markdown(
+        "ROA measures how efficiently a company uses its assets to generate profit. "
+        "Predicting the *direction of change* in ROA helps investors identify companies "
+        "whose profitability may be shifting — either recovering from a downturn or "
+        "peaking before a decline."
+    )
+    st.subheader("How?")
+    st.markdown(
+        "1. **Training data:** ~155,000 company-year observations from WRDS Compustat (2010–2024).\n"
+        "2. **Features:** 7 financial ratios — Debt ratio, P/S ratio, log(assets), lagged ROA, "
+        "P/E ratio, ROE, and earnings growth.\n"
+        "3. **Models:** Random Forest Classifier (IMPROVE vs DECLINE) and Random Forest Regressor "
+        "(predicted ROA value), both with walk-forward validation.\n"
+        "4. **Live data:** When you enter a ticker, the app pulls current financials from "
+        "Yahoo Finance, computes the same 7 features, and runs them through the trained models."
+    )
+    st.subheader("Team")
+    st.markdown(
+        "**BA870/AC820 Financial & Accounting Analytics — Spring 2026**  \n"
+        "Arshdeep Singh Oberoi · Mokhinur Talibzhanova · Steven Marathias  \n"
+        "Boston University"
+    )
+    st.subheader("Links")
+    st.markdown(
+        "- [GitHub Repository](https://github.com/Stevenmarathias/financial-analytics-dashboard)  \n"
+        "- [Google Colab Notebook](https://colab.research.google.com/) *(training & development)*"
+    )
+    st.stop()
+
+elif page == "Model Details":
+    st.title("Model Details")
+
+    st.subheader("Training Data")
+    st.markdown(
+        "The model was trained on pre-computed features derived from **WRDS Compustat "
+        "Fundamentals Annual** data. Only the derived features (not raw WRDS data) are "
+        "used at deployment time."
+    )
+
+    st.subheader("Features Used")
+    feat_explain = pd.DataFrame({
+        'Feature': ['Debt_ratio', 'PS_ratio', 'log_at', 'ROA_lagged_1_year',
+                     'PE_ratio', 'ROE', 'earnings_growth'],
+        'Formula': ['Long-term debt / Total assets', 'Market cap / Revenue',
+                     'log(Total assets in $M)', 'Prior year Net income / Total assets',
+                     'Price / Earnings per share', 'Net income / Equity',
+                     'Year-over-year % change in Net income'],
+        'Interpretation': ['Financial leverage', 'Market valuation vs sales',
+                           'Company size (log-scaled)', 'Prior profitability',
+                           'Market valuation vs earnings', 'Return to shareholders',
+                           'Earnings momentum'],
+    })
+    st.dataframe(feat_explain, use_container_width=True, hide_index=True)
+
+    st.subheader("Model Performance")
+    st.markdown(
+        f"- **Classifier:** Random Forest — Balanced Accuracy: **{models['clf_ba']:.2%}**\n"
+        f"- **Regressor:** Random Forest — MAE: **{models['reg_mae']:.4f}**\n"
+        "- **Validation:** Time-based split (80% train / 20% test) preserving chronological order"
+    )
+
+    st.subheader("Key Design Decisions")
+    st.markdown(
+        "- **Time-aware split:** No future data leaks into training — test years always come after train years.\n"
+        "- **Outlier clipping:** Features are clipped at 1st/99th percentile using train-only bounds.\n"
+        "- **Median imputation:** Missing values are filled with training-set medians inside the pipeline.\n"
+        "- **Balanced classes:** The classifier uses `class_weight='balanced_subsample'` to handle imbalanced targets.\n"
+        "- **Live feature computation:** `earnings_growth` and `ROA_lagged_1_year` are computed from "
+        "actual Yahoo Finance data when available, falling back to training medians only when necessary."
+    )
+
+    st.subheader("Limitations")
+    st.markdown(
+        "- 62% balanced accuracy means the model is better than random but far from perfect — "
+        "financial prediction is inherently noisy.\n"
+        "- The model predicts *direction of ROA change*, not stock price or company quality. "
+        "A strong company like Apple may get a DECLINE prediction because its ROA is already near "
+        "its ceiling.\n"
+        "- Yahoo Finance data may differ slightly from WRDS Compustat due to reporting timing and methodology."
+    )
+    st.stop()
+
+
+# ──────────────────────────────────────────────
+# App UI — Predict a Stock
 # ──────────────────────────────────────────────
 st.title("📊 Financial Performance Predictor")
 st.markdown(
