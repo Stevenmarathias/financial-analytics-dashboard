@@ -378,7 +378,14 @@ def get_industry_stats(sic_code=None):
 # ──────────────────────────────────────────────
 with st.sidebar:
     st.header("📊 Navigation")
-    page = st.radio("", ["Predict a Stock", "About This App", "Model Details"], label_visibility="collapsed")
+    st.markdown("**Start Here:**")
+    page = st.radio("", [
+        "Predict a Stock",
+        "About This App",
+        "Model Details",
+        "Model Training Code",
+        "Model Output & Comparison",
+    ], label_visibility="collapsed")
 
 if page == "About This App":
     st.title("About This App")
@@ -469,6 +476,189 @@ elif page == "Model Details":
         "its ceiling.\n"
         "- Yahoo Finance data may differ slightly from WRDS Compustat due to reporting timing and methodology."
     )
+    st.stop()
+
+elif page == "Model Training Code":
+    st.title("Model Training Code")
+
+    st.subheader("Section 1 — Data Collection & Feature Engineering")
+    st.markdown("**Data source:** WRDS Compustat Fundamentals Annual (2010–2024)")
+    st.code("""
+# Load WRDS Compustat data (exported as CSV)
+df_wrds = pd.read_csv('hmieh30aq0y8jsse.csv')
+# Raw dataset: 155,354 rows × 19 columns
+
+# Core financial ratios
+df_wrds['ROA']        = df_wrds['ni']   / df_wrds['at']
+df_wrds['Debt_ratio'] = df_wrds['dltt'] / df_wrds['at']
+df_wrds['PS_ratio']   = (df_wrds['prcc_f'] * df_wrds['csho']) / df_wrds['sale']
+df_wrds['log_at']     = np.log(df_wrds['at'])
+df_wrds['PE_ratio']   = df_wrds['prcc_f'] / df_wrds['epspx']
+df_wrds['ROE']        = df_wrds['ni'] / df_wrds['ceq']
+
+# Lag ROA by one year (within each company)
+df_wrds['ROA_lagged_1_year'] = df_wrds.groupby('gvkey')['ROA'].shift(1)
+
+# Target: did ROA improve next year?
+df_wrds['ROA_next'] = df_wrds.groupby('gvkey')['ROA'].shift(-1)
+df_wrds['target']   = (df_wrds['ROA_next'] > df_wrds['ROA']).astype(int)
+
+# Earnings growth (year-over-year)
+df_wrds['earnings_growth'] = df_wrds.groupby('gvkey')['ni'].pct_change()
+    """, language="python")
+
+    st.subheader("Section 2 — Model Training & Evaluation")
+    st.markdown("**Split:** Time-based (80% train / 20% test) — no future data leakage")
+    st.code("""
+FEATURES = [
+    'Debt_ratio', 'PS_ratio', 'log_at', 'ROA_lagged_1_year',
+    'PE_ratio', 'ROE', 'earnings_growth',
+]
+
+# Time-based split
+fiscal_years = sorted(df['fyear'].unique())
+split_idx = int(len(fiscal_years) * 0.80)
+train_years = fiscal_years[:split_idx]
+test_years  = fiscal_years[split_idx:]
+
+# Clip outliers at 1st/99th percentile (train-only bounds)
+for feat in FEATURES:
+    lo, hi = train_df[feat].quantile([0.01, 0.99])
+    train_df[feat] = train_df[feat].clip(lo, hi)
+    test_df[feat]  = test_df[feat].clip(lo, hi)
+    """, language="python")
+
+    st.code("""
+# Classification: will ROA improve (1) or decline (0)?
+clf = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('model', RandomForestClassifier(
+        n_estimators=80, max_depth=8, min_samples_leaf=30,
+        class_weight='balanced_subsample', random_state=42,
+    )),
+])
+clf.fit(X_train, y_train_clf)
+
+# Regression: predict actual next-year ROA value
+reg = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('model', RandomForestRegressor(
+        n_estimators=80, max_depth=8, min_samples_leaf=30,
+        random_state=42,
+    )),
+])
+reg.fit(X_train, y_train_reg)
+    """, language="python")
+
+    st.subheader("Section 3 — Live Prediction (Dashboard)")
+    st.markdown("**Data source:** Yahoo Finance API via `yfinance`")
+    st.code("""
+def predict_performance(ticker):
+    # Pull latest financials from Yahoo Finance
+    tk = yf.Ticker(ticker)
+    bs = tk.balance_sheet     # Total Assets, Total Debt, Equity
+    fs = tk.financials        # Net Income, Total Revenue
+
+    # Convert from raw dollars to millions (WRDS scale)
+    at_m = total_assets / 1_000_000
+
+    # Compute same 7 features as training
+    ROA        = ni_m / at_m
+    Debt_ratio = debt_m / at_m
+    PS_ratio   = mcap_m / rev_m
+    log_at     = np.log(at_m)
+    # ... PE_ratio, ROE, earnings_growth, ROA_lagged_1_year
+
+    # Apply training clip bounds, then predict
+    X_live = pd.DataFrame([feature_dict])
+    prediction  = clf.predict(X_live)       # IMPROVE or DECLINE
+    probability = clf.predict_proba(X_live)  # confidence
+    pred_roa    = reg.predict(X_live)        # predicted ROA value
+    """, language="python")
+
+    st.markdown("---")
+    st.caption("Full source code available on [GitHub](https://github.com/Stevenmarathias/financial-analytics-dashboard)")
+    st.stop()
+
+elif page == "Model Output & Comparison":
+    st.title("Model Output & Comparison")
+
+    st.subheader("Classification Models — Predicting ROA Direction")
+    st.markdown(
+        "The classifier predicts whether a company's ROA will **improve (1)** or "
+        "**decline (0)** in the next fiscal year. Two models were compared:"
+    )
+
+    clf_summary = pd.DataFrame({
+        'Model': ['Logistic Regression (Scaled)', 'Random Forest (Fast)'],
+        'Balanced Accuracy': ['—', f"{models['clf_ba']:.2%}"],
+        'Notes': [
+            'Linear model with RobustScaler — baseline',
+            'Selected model — captures non-linear patterns',
+        ],
+    })
+    st.dataframe(clf_summary, use_container_width=True, hide_index=True)
+
+    st.markdown(
+        f"**Selected classifier:** Random Forest  \n"
+        f"**Test balanced accuracy:** {models['clf_ba']:.2%}  \n"
+        "Balanced accuracy accounts for class imbalance — it averages recall across both classes."
+    )
+
+    st.subheader("Regression Models — Predicting Next-Year ROA Value")
+    st.markdown(
+        "The regressor predicts the **actual ROA value** for the next fiscal year:"
+    )
+
+    reg_summary = pd.DataFrame({
+        'Model': ['Ridge Regression (Scaled)', 'Random Forest Regressor (Fast)'],
+        'MAE': ['N/A', f"{models['reg_mae']:.4f}"],
+        'Notes': [
+            'Linear model with L2 regularization — baseline',
+            'Selected model — lower error on test set',
+        ],
+    })
+    st.dataframe(reg_summary, use_container_width=True, hide_index=True)
+
+    st.markdown(
+        f"**Selected regressor:** Random Forest  \n"
+        f"**Test MAE:** {models['reg_mae']:.4f}  \n"
+        "MAE (Mean Absolute Error) measures the average magnitude of prediction errors."
+    )
+
+    st.subheader("Actual vs Predicted ROA — Test Years")
+    fig_roa = go.Figure()
+    fig_roa.add_trace(go.Scatter(
+        x=predictions_by_year['fyear'], y=predictions_by_year['actual_roa_next'],
+        mode='lines+markers', name='Actual Mean ROA', line=dict(color='#2e7d32'),
+    ))
+    fig_roa.add_trace(go.Scatter(
+        x=predictions_by_year['fyear'], y=predictions_by_year['predicted_roa_next'],
+        mode='lines+markers', name='Predicted Mean ROA', line=dict(color='#c62828', dash='dash'),
+    ))
+    fig_roa.update_layout(xaxis_title='Fiscal Year', yaxis_title='Mean ROA',
+        template='plotly_white', height=400)
+    st.plotly_chart(fig_roa, use_container_width=True)
+
+    st.subheader("Feature Importance")
+    st.markdown("Which features mattered most to the Random Forest classifier:")
+    try:
+        importances = clf.named_steps['model'].feature_importances_
+        feat_imp = pd.Series(importances, index=FEATURES).sort_values(ascending=True)
+        fig_imp = go.Figure(go.Bar(
+            x=feat_imp.values, y=feat_imp.index,
+            orientation='h', marker_color='#1976d2',
+        ))
+        fig_imp.update_layout(
+            title='Feature Importance (Random Forest Classifier)',
+            xaxis_title='Importance', template='plotly_white', height=350,
+        )
+        st.plotly_chart(fig_imp, use_container_width=True)
+    except Exception:
+        st.info("Feature importance not available.")
+
+    st.markdown("---")
+    st.caption("Models trained on WRDS Compustat data (2010–2024) with time-based train/test split.")
     st.stop()
 
 
