@@ -59,7 +59,10 @@ predictions_by_year = pd.DataFrame(artifacts['predictions_by_year'])
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def get_price_data(ticker):
-    df = yf.download(ticker, start='2010-01-01', auto_adjust=True, progress=False)
+    try:
+        df = yf.download(ticker, start='2010-01-01', auto_adjust=True, progress=False)
+    except Exception:
+        return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
     if df.empty:
@@ -78,38 +81,73 @@ def get_price_data(ticker):
 def predict_performance(ticker):
     try:
         tk = yf.Ticker(ticker)
-        info = tk.info
-        bs = tk.balance_sheet
-        fs = tk.financials
     except Exception:
         return None
 
-    def from_info_or_bs(info_key, bs_row):
-        val = info.get(info_key, None)
-        if val is not None:
-            return float(val)
-        if bs is not None and not bs.empty and bs_row in bs.index:
-            return float(bs.loc[bs_row].dropna().iloc[0])
+    # Grab data sources separately — info can fail on cloud servers
+    info = {}
+    bs = None
+    fs = None
+    try:
+        info = tk.info or {}
+    except Exception:
+        pass
+    try:
+        bs = tk.balance_sheet
+    except Exception:
+        pass
+    try:
+        fs = tk.financials
+    except Exception:
+        pass
+
+    # If we got nothing at all, try fast_info as last resort
+    if not info and (bs is None or bs.empty) and (fs is None or fs.empty):
+        try:
+            fi = tk.fast_info
+            info = {
+                'marketCap': getattr(fi, 'market_cap', None),
+                'shortName': ticker.upper(),
+            }
+        except Exception:
+            return None
+
+    def safe_bs(row_name):
+        """Pull most recent value from balance sheet."""
+        if bs is not None and not bs.empty and row_name in bs.index:
+            vals = bs.loc[row_name].dropna()
+            if len(vals) > 0:
+                return float(vals.iloc[0])
         return None
 
-    def from_info_or_fs(info_key, fs_row):
-        val = info.get(info_key, None)
-        if val is not None:
-            return float(val)
-        if fs is not None and not fs.empty and fs_row in fs.index:
-            return float(fs.loc[fs_row].dropna().iloc[0])
+    def safe_fs(row_name):
+        """Pull most recent value from financials."""
+        if fs is not None and not fs.empty and row_name in fs.index:
+            vals = fs.loc[row_name].dropna()
+            if len(vals) > 0:
+                return float(vals.iloc[0])
         return None
 
-    total_assets  = from_info_or_bs('totalAssets', 'Total Assets')
-    total_debt    = from_info_or_bs('totalDebt', 'Total Debt')
-    net_income    = from_info_or_fs('netIncomeToCommon', 'Net Income')
-    total_revenue = from_info_or_fs('totalRevenue', 'Total Revenue')
+    # Prefer balance sheet / financials (reliable on cloud), fall back to info
+    total_assets  = safe_bs('Total Assets') or info.get('totalAssets', None)
+    total_debt    = safe_bs('Total Debt') or info.get('totalDebt', None)
+    net_income    = safe_fs('Net Income') or info.get('netIncomeToCommon', None)
+    total_revenue = safe_fs('Total Revenue') or info.get('totalRevenue', None)
+    equity        = safe_bs('Stockholders Equity') or safe_bs('Total Stockholder Equity') or info.get('totalStockholderEquity', None)
     market_cap    = info.get('marketCap', None)
-    equity        = from_info_or_bs('totalStockholderEquity', 'Stockholders Equity')
+    if market_cap is None:
+        try:
+            market_cap = getattr(tk.fast_info, 'market_cap', None)
+        except Exception:
+            pass
     trailing_pe   = info.get('trailingPE', None)
     sector        = info.get('sector', 'Unknown')
-    company_name  = info.get('shortName', ticker)
+    company_name  = info.get('shortName', ticker.upper())
     sic_code      = info.get('sic', None)
+
+    # If we still don't have total_assets, we can't compute anything useful
+    if total_assets is None and total_revenue is None and net_income is None:
+        return None
 
     def to_millions(val):
         return val / 1_000_000 if val is not None else None
@@ -274,7 +312,17 @@ if analyze and ticker.strip():
         price_df = get_price_data(ticker)
 
     if pred is None:
-        st.error(f"Could not fetch data for **{ticker}**. Check the symbol and try again.")
+        st.error(f"Could not fetch financial data for **{ticker}**. Check the symbol and try again.")
+        st.info("💡 Tip: Try common tickers like AAPL, MSFT, NVDA, TSLA, META, AMZN, GOOGL")
+        # Debug info
+        with st.expander("Debug info"):
+            try:
+                tk = yf.Ticker(ticker)
+                st.write("info keys:", list((tk.info or {}).keys())[:10])
+                st.write("balance_sheet shape:", tk.balance_sheet.shape if tk.balance_sheet is not None else "None")
+                st.write("financials shape:", tk.financials.shape if tk.financials is not None else "None")
+            except Exception as e:
+                st.write(f"Error: {e}")
         st.stop()
 
     if price_df.empty:
